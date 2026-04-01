@@ -320,6 +320,8 @@ export default Vue.extend({
         {name: this.$t('sort.file_size').toString(), key: 'fileSize'},
         {name: this.$t('sort.file_name').toString(), key: 'name'},
         {name: this.$t('sort.page_count').toString(), key: 'media.pagesCount'},
+        {name: this.$t('sort.random').toString(), key: 'random.v1'},
+        {name: this.$t('sort.random_v2').toString(), key: 'random.v2'},
       ] as SortOption[]
     },
     filterOptionsList(): FiltersOptions {

@@ -28,6 +28,7 @@ import org.gotson.komga.domain.service.BookLifecycle
 import org.gotson.komga.domain.service.KomgaUserLifecycle
 import org.gotson.komga.domain.service.LibraryLifecycle
 import org.gotson.komga.domain.service.SeriesLifecycle
+import org.gotson.komga.infrastructure.cache.BookRandomExposureCache
 import org.gotson.komga.infrastructure.jooq.UnpagedSorted
 import org.gotson.komga.infrastructure.search.SearchIndexLifecycle
 import org.junit.jupiter.api.AfterAll
@@ -60,6 +61,7 @@ class BookDtoDaoTest(
   @Autowired private val userRepository: KomgaUserRepository,
   @Autowired private val userLifecycle: KomgaUserLifecycle,
   @Autowired private val searchIndexLifecycle: SearchIndexLifecycle,
+  @Autowired private val bookRandomExposureCache: BookRandomExposureCache,
 ) {
   private val library = makeLibrary()
   private var series = makeSeries("Series")
@@ -84,6 +86,7 @@ class BookDtoDaoTest(
   @AfterEach
   fun deleteBooks() {
     bookLifecycle.deleteMany(bookRepository.findAll())
+    bookRandomExposureCache.clear()
     searchIndexLifecycle.rebuildIndex()
   }
 
@@ -944,6 +947,57 @@ class BookDtoDaoTest(
 
       // then
       assertThat(found).isEmpty()
+    }
+  }
+
+  @Nested
+  inner class RandomSort {
+    @Test
+    fun `given random v2 when reloading recommendations then the next reload avoids the same top result`() {
+      // given
+      seriesLifecycle.addBooks(
+        series,
+        (1..8).map {
+          makeBook("Random Book $it", seriesId = series.id, libraryId = library.id)
+        },
+      )
+
+      val pageable = PageRequest.of(0, 1, Sort.by("random.v2"))
+
+      // when
+      val first = bookDtoDao.findAll(BookSearch(), SearchContext(user), pageable).content.single()
+      val second = bookDtoDao.findAll(BookSearch(), SearchContext(user), pageable).content.single()
+
+      // then
+      assertThat(second.id).isNotEqualTo(first.id)
+    }
+
+    @Test
+    fun `given random v2 when search changes then exposure state does not leak across searches`() {
+      // given
+      seriesLifecycle.addBooks(
+        series,
+        listOf(
+          makeBook("Alpha 1", seriesId = series.id, libraryId = library.id),
+          makeBook("Alpha 2", seriesId = series.id, libraryId = library.id),
+          makeBook("Alpha 3", seriesId = series.id, libraryId = library.id),
+          makeBook("Beta 1", seriesId = series.id, libraryId = library.id),
+          makeBook("Beta 2", seriesId = series.id, libraryId = library.id),
+          makeBook("Beta 3", seriesId = series.id, libraryId = library.id),
+        ),
+      )
+      searchIndexLifecycle.rebuildIndex()
+
+      val pageable = PageRequest.of(0, 1, Sort.by("random.v2"))
+
+      // when
+      val alphaFirst = bookDtoDao.findAll(BookSearch(fullTextSearch = "Alpha"), SearchContext(user), pageable).content.single()
+      val alphaSecond = bookDtoDao.findAll(BookSearch(fullTextSearch = "Alpha"), SearchContext(user), pageable).content.single()
+      val betaFirst = bookDtoDao.findAll(BookSearch(fullTextSearch = "Beta"), SearchContext(user), pageable).content.single()
+
+      // then
+      assertThat(alphaSecond.id).isNotEqualTo(alphaFirst.id)
+      assertThat(betaFirst.name).startsWith("Beta")
     }
   }
 }

@@ -4,6 +4,7 @@ import org.gotson.komga.domain.model.BookSearch
 import org.gotson.komga.domain.model.ContentRestrictions
 import org.gotson.komga.domain.model.ReadList
 import org.gotson.komga.domain.model.SearchContext
+import org.gotson.komga.infrastructure.cache.BookRandomExposureCache
 import org.gotson.komga.infrastructure.datasource.SqliteUdfDataSource
 import org.gotson.komga.infrastructure.jooq.BookSearchHelper
 import org.gotson.komga.infrastructure.jooq.RequiredJoin
@@ -35,6 +36,7 @@ import org.gotson.komga.language.toUTC
 import org.jooq.Condition
 import org.jooq.DSLContext
 import org.jooq.Record
+import org.jooq.Record1
 import org.jooq.ResultQuery
 import org.jooq.SelectOnConditionStep
 import org.jooq.impl.DSL
@@ -49,6 +51,7 @@ import org.springframework.data.domain.Pageable
 import org.springframework.data.domain.Sort
 import org.springframework.stereotype.Component
 import java.net.URL
+import kotlin.random.Random
 
 @Component
 class BookDtoDao(
@@ -57,6 +60,7 @@ class BookDtoDao(
   private val luceneHelper: LuceneHelper,
   @param:Value("#{@komgaProperties.database.batchChunkSize}") private val batchSize: Int,
   private val bookCommonDao: BookCommonDao,
+  private val bookRandomExposureCache: BookRandomExposureCache,
 ) : SplitDslDaoBase(dslRW, dslRO),
   BookDtoRepository {
   private val b = Tables.BOOK
@@ -93,6 +97,7 @@ class BookDtoDao(
       "readProgress.lastModified" to r.LAST_MODIFIED_DATE,
       "readProgress.readDate" to r.READ_DATE,
       "readList.number" to rlb.NUMBER,
+      "random.v1" to DSL.rand(),
     )
 
   override fun findAll(pageable: Pageable): Page<BookDto> = findAll(BookSearch(), SearchContext.ofAnonymousUser(), pageable)
@@ -110,17 +115,22 @@ class BookDtoDao(
     requireNotNull(context.userId) { "Missing userId in search context" }
 
     val (conditions, joins) = BookSearchHelper(context).toCondition(search.condition)
-    return findAll(conditions, context.userId, pageable, search.fullTextSearch, joins)
+    return findAll(search, context, conditions, pageable, joins)
   }
 
   private fun findAll(
+    search: BookSearch,
+    context: SearchContext,
     conditions: Condition,
-    userId: String,
     pageable: Pageable,
-    searchTerm: String?,
     joins: Set<RequiredJoin>,
   ): Page<BookDto> {
-    val bookIds = luceneHelper.searchEntitiesIds(searchTerm, LuceneEntity.Book)
+    val userId = requireNotNull(context.userId)
+    val bookIds = luceneHelper.searchEntitiesIds(search.fullTextSearch, LuceneEntity.Book)
+
+    if (pageable.sort.any { it.property == "random.v2" }) {
+      return findAllRandomV2(search, context, conditions, pageable, joins, bookIds)
+    }
 
     val orderBy =
       pageable.sort.mapNotNull {
@@ -154,35 +164,8 @@ class BookDtoDao(
       val count =
         dslRO.fetchCount(
           dslRO
-            .select(b.ID)
-            .from(b)
-            .leftJoin(m)
-            .on(b.ID.eq(m.BOOK_ID))
-            .leftJoin(d)
-            .on(b.ID.eq(d.BOOK_ID))
-            .leftJoin(r)
-            .on(b.ID.eq(r.BOOK_ID))
-            .and(readProgressCondition(userId))
-            .leftJoin(sd)
-            .on(b.SERIES_ID.eq(sd.SERIES_ID))
-            .apply {
-              joins.forEach { join ->
-                when (join) {
-                  is RequiredJoin.ReadList -> {
-                    val rlbAlias = rlbAlias(join.readListId)
-                    leftJoin(rlbAlias).on(rlbAlias.BOOK_ID.eq(b.ID).and(rlbAlias.READLIST_ID.eq(join.readListId)))
-                  }
-                  // always joined
-                  RequiredJoin.BookMetadata -> Unit
-                  RequiredJoin.Media -> Unit
-                  is RequiredJoin.ReadProgress -> Unit
-                  // Series joins - not needed
-                  RequiredJoin.BookMetadataAggregation -> Unit
-                  RequiredJoin.SeriesMetadata -> Unit
-                  is RequiredJoin.Collection -> Unit
-                }
-              }
-            }.where(conditions)
+            .selectBookIdsBase(userId, joins)
+            .where(conditions)
             .and(searchCondition)
             .groupBy(b.ID),
         )
@@ -204,6 +187,62 @@ class BookDtoDao(
         else
           PageRequest.of(0, maxOf(count, 20), pageSort),
         count.toLong(),
+      )
+    }
+  }
+
+  private fun findAllRandomV2(
+    search: BookSearch,
+    context: SearchContext,
+    conditions: Condition,
+    pageable: Pageable,
+    joins: Set<RequiredJoin>,
+    bookIds: List<String>?,
+  ): Page<BookDto> {
+    val userId = requireNotNull(context.userId)
+    val cacheKey = bookRandomExposureCache.key(userId, search, context)
+
+    TempTable(dslRO).use { tempTable ->
+      val searchCondition =
+        when {
+          bookIds == null -> noCondition()
+          bookIds.isEmpty() -> falseCondition()
+          else -> {
+            tempTable.insertTempStrings(batchSize, bookIds)
+            b.ID.`in`(tempTable.selectTempStrings())
+          }
+        }
+
+      val candidateIds =
+        dslRO
+          .selectBookIdsBase(userId, joins)
+          .where(conditions)
+          .and(searchCondition)
+          .groupBy(b.ID)
+          .fetch(b.ID)
+
+      val selectedIds =
+        bookRandomExposureCache.withState(cacheKey) { state ->
+          selectRandomV2Page(candidateIds, pageable, cacheKey, state)
+        }
+      val dtos =
+        if (selectedIds.isEmpty()) {
+          emptyList()
+        } else {
+          dslRO
+            .selectBase(userId, joins)
+            .where(b.ID.`in`(selectedIds))
+            .orderBy(b.ID.sortByValues(selectedIds))
+            .fetchAndMap(dslRO)
+        }
+
+      return PageImpl(
+        dtos,
+        if (pageable.isPaged)
+          PageRequest.of(pageable.pageNumber, pageable.pageSize, pageable.sort)
+        else
+          PageRequest.of(0, maxOf(candidateIds.size, 20), pageable.sort),
+        candidateIds.size.toLong(),
       )
     }
   }
@@ -306,6 +345,62 @@ class BookDtoDao(
   }
 
   private fun readProgressCondition(userId: String): Condition = r.USER_ID.eq(userId)
+
+  private fun selectRandomV2Page(
+    candidateIds: List<String>,
+    pageable: Pageable,
+    cacheKey: BookRandomExposureCache.Key,
+    state: BookRandomExposureCache.State,
+  ): List<String> {
+    if (candidateIds.isEmpty()) return emptyList()
+
+    state.exposures.keys.retainAll(candidateIds.toSet())
+
+    val needed =
+      if (pageable.isPaged) {
+        minOf(candidateIds.size, (pageable.offset + pageable.pageSize).toInt())
+      } else {
+        candidateIds.size
+      }
+    val rng = Random(31L * cacheKey.hashCode() + state.rerollCount)
+    val remainingIds = candidateIds.toMutableList()
+    val selectedPrefix = MutableList(needed) { selectRandomV2Candidate(remainingIds, state.exposures, rng) }
+    val selectedIds =
+      if (pageable.isPaged) {
+        selectedPrefix.drop(pageable.offset.toInt()).take(pageable.pageSize)
+      } else {
+        selectedPrefix
+      }
+
+    selectedIds.forEach { state.exposures[it] = state.exposures.getOrDefault(it, 0) + 1 }
+    state.rerollCount++
+
+    return selectedIds
+  }
+
+  private fun selectRandomV2Candidate(
+    remainingIds: MutableList<String>,
+    exposures: Map<String, Int>,
+    rng: Random,
+  ): String {
+    if (remainingIds.size == 1) return remainingIds.removeAt(0)
+
+    val firstIndex = rng.nextInt(remainingIds.size)
+    var secondIndex = rng.nextInt(remainingIds.size - 1)
+    if (secondIndex >= firstIndex) secondIndex++
+
+    val firstId = remainingIds[firstIndex]
+    val secondId = remainingIds[secondIndex]
+    val chosenIndex =
+      when {
+        exposures.getOrDefault(firstId, 0) < exposures.getOrDefault(secondId, 0) -> firstIndex
+        exposures.getOrDefault(firstId, 0) > exposures.getOrDefault(secondId, 0) -> secondIndex
+        rng.nextBoolean() -> firstIndex
+        else -> secondIndex
+      }
+
+    return remainingIds.removeAt(chosenIndex)
+  }
 
   private fun findSiblingSeries(
     bookId: String,
@@ -438,6 +533,39 @@ class BookDtoDao(
         }
       }
   }
+
+  private fun DSLContext.selectBookIdsBase(
+    userId: String,
+    joins: Set<RequiredJoin> = emptySet(),
+  ): SelectOnConditionStep<Record1<String>> =
+    this
+      .select(b.ID)
+      .from(b)
+      .leftJoin(m)
+      .on(b.ID.eq(m.BOOK_ID))
+      .leftJoin(d)
+      .on(b.ID.eq(d.BOOK_ID))
+      .leftJoin(r)
+      .on(b.ID.eq(r.BOOK_ID))
+      .and(readProgressCondition(userId))
+      .leftJoin(sd)
+      .on(b.SERIES_ID.eq(sd.SERIES_ID))
+      .apply {
+        joins.forEach { join ->
+          when (join) {
+            is RequiredJoin.ReadList -> {
+              val rlbAlias = rlbAlias(join.readListId)
+              leftJoin(rlbAlias).on(rlbAlias.BOOK_ID.eq(b.ID).and(rlbAlias.READLIST_ID.eq(join.readListId)))
+            }
+            RequiredJoin.BookMetadata -> Unit
+            RequiredJoin.Media -> Unit
+            is RequiredJoin.ReadProgress -> Unit
+            RequiredJoin.BookMetadataAggregation -> Unit
+            RequiredJoin.SeriesMetadata -> Unit
+            is RequiredJoin.Collection -> Unit
+          }
+        }
+      }
 
   private fun ResultQuery<Record>.fetchAndMap(dsl: DSLContext): MutableList<BookDto> {
     val records = fetch()
