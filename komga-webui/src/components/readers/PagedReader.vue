@@ -17,22 +17,23 @@
                 height="100%"
     >
       <!--  Carousel: pages  -->
-      <v-carousel-item v-for="(spread, i) in spreads"
-                       :key="`spread${i}`"
-                       :eager="eagerLoad(i)"
+      <v-carousel-item v-for="({spread, index}) in visibleSpreads"
+                       :key="`spread${index}`"
+                       :value="index"
+                       :eager="eagerLoad(index)"
                        class="full-height"
-                       :class="preRender(i) ? 'pre-render' : ''"
+                       :class="preRender(index) ? 'pre-render' : ''"
                        :transition="animations ? undefined : false"
                        :reverse-transition="animations ? undefined : false"
       >
         <div class="full-height d-flex flex-column justify-center">
           <div :class="`d-flex flex-row${flipDirection ? '-reverse' : ''} justify-center px-0 mx-0`">
             <img v-for="(page, j) in spread"
-                 :alt="`Page ${page.number}`"
-                 :key="`spread${i}-${j}`"
-                 :src="page.url"
-                 :class="imgClass(spread)"
-                 class="img-fit-all"
+                  :alt="`Page ${page.number}`"
+                  :key="`spread${index}-${j}`"
+                  :src="page.url"
+                  :class="imgClass(spread)"
+                  class="img-fit-all"
             />
           </div>
         </div>
@@ -82,6 +83,8 @@ import {PagedReaderLayout, ScaleType} from '@/types/enum-reader'
 import {shortcutsLTR, shortcutsRTL, shortcutsVertical} from '@/functions/shortcuts/paged-reader'
 import {PageDtoWithUrl} from '@/types/komga-books'
 import {buildSpreads} from '@/functions/book-spreads'
+
+const SPREAD_WINDOW_RADIUS = 25
 
 export default Vue.extend({
   name: 'PagedReader',
@@ -196,6 +199,21 @@ export default Vue.extend({
     },
     isDoublePages(): boolean {
       return this.pageLayout === PagedReaderLayout.DOUBLE_PAGES || this.pageLayout === PagedReaderLayout.DOUBLE_NO_COVER
+    },
+    windowStart(): number {
+      return Math.max(0, this.carouselPage - SPREAD_WINDOW_RADIUS)
+    },
+    windowEnd(): number {
+      return Math.min(this.spreads.length - 1, this.carouselPage + SPREAD_WINDOW_RADIUS)
+    },
+    visibleSpreads(): {spread: PageDtoWithUrl[], index: number}[] {
+      if (this.spreads.length === 0) return []
+      return this.spreads
+        .slice(this.windowStart, this.windowEnd + 1)
+        .map((spread, offset) => ({
+          spread,
+          index: this.windowStart + offset,
+        }))
     },
   },
   methods: {
