@@ -233,7 +233,7 @@
     "drag_drop": "ドラッグ&ドロップ",
     "duplicate": "重複",
     "email": "メールアドレス",
-    "epub": "Epub",
+    "epub": "EPUB",
     "error": "エラー",
     "filename": "ファイル名",
     "filter_no_matches": "フィルタに一致するものはありません",
@@ -930,7 +930,8 @@
   "navigation": {
     "home": "ホーム",
     "libraries": "ライブラリ",
-    "logout": "ログアウト"
+    "logout": "ログアウト",
+    "try_new_ui": "新しい UI をお試しください"
   },
   "no_libraries_pinned": {
     "subtitle": "ライブラリは3点メニューからピン留めできます",

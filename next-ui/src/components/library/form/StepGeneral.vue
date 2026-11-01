@@ -1,8 +1,9 @@
 <template>
-  <v-container class="px-0">
+  <v-container fluid>
     <v-row>
       <v-col>
         <v-text-field
+          ref="fieldNameRef"
           v-model="model.name"
           :rules="[rules.required()]"
           :label="
@@ -12,7 +13,38 @@
               id: 's1nzhU',
             })
           "
-          hide-details="auto"
+        />
+      </v-col>
+    </v-row>
+
+    <v-row
+      class="align-baseline"
+      density="comfortable"
+    >
+      <v-col>
+        <v-text-field
+          ref="fieldRootRef"
+          v-model="model.root"
+          :rules="[rules.required()]"
+          :label="
+            $formatMessage({
+              description: 'Form add/edit library: General - root directory',
+              defaultMessage: 'Root directory',
+              id: 'afXGQS',
+            })
+          "
+        />
+      </v-col>
+      <v-col cols="auto">
+        <v-btn
+          :id="id"
+          :text="
+            $formatMessage({
+              description: 'Form add/edit library: General - root folder browse button',
+              defaultMessage: 'Browse',
+              id: 'E1kQun',
+            })
+          "
         />
       </v-col>
     </v-row>
@@ -45,38 +77,6 @@
         </v-alert>
       </v-col>
     </v-row>
-
-    <v-row
-      class="align-center"
-      density="comfortable"
-    >
-      <v-col>
-        <v-text-field
-          v-model="model.root"
-          :rules="[rules.required()]"
-          :label="
-            $formatMessage({
-              description: 'Form add/edit library: General - root directory',
-              defaultMessage: 'Root directory',
-              id: 'afXGQS',
-            })
-          "
-          hide-details="auto"
-        />
-      </v-col>
-      <v-col cols="auto">
-        <v-btn
-          :id="id"
-          :text="
-            $formatMessage({
-              description: 'Form add/edit library: General - root folder browse button',
-              defaultMessage: 'Browse',
-              id: 'E1kQun',
-            })
-          "
-        />
-      </v-col>
-    </v-row>
   </v-container>
 
   <DialogConfirmEdit
@@ -86,6 +86,14 @@
         description: 'Form add/edit library: General - root directory selection dialog title',
         defaultMessage: 'Library root directory',
         id: 'CJaS7j',
+      })
+    "
+    :ok-text="
+      $formatMessage({
+        description:
+          'Form add/edit library: General - root directory selection dialog confirmation button label',
+        defaultMessage: 'Ok',
+        id: 'laWvMU',
       })
     "
     max-width="600"
@@ -104,15 +112,31 @@
 <script setup lang="ts">
 import RemoteFileList from '@/components/RemoteFileList.vue'
 import { useDisplay } from 'vuetify'
-import { useRules } from 'vuetify/labs/rules'
+import { useRules } from 'vuetify'
 import type { LibraryCreationDto } from '@/generated/openapi'
+import { VTextField } from 'vuetify/components'
 
 const display = useDisplay()
 const rules = useRules()
 
 const id = useId()
 
+const fieldNameRef = ref<InstanceType<typeof VTextField> | null>(null)
+const fieldRootRef = ref<InstanceType<typeof VTextField> | null>(null)
+
 type LibraryCreationGeneral = Pick<LibraryCreationDto, 'name' | 'root'>
 
 const model = defineModel<LibraryCreationGeneral>({ required: true })
+
+const emit = defineEmits<{
+  'update:errorCount': [errorCount: number]
+}>()
+
+watch(
+  [() => fieldNameRef.value?.isValid, () => fieldRootRef.value?.isValid],
+  ([nameValid, rootValid]) => {
+    const fields = [nameValid, rootValid]
+    emit('update:errorCount', fields.filter((it) => it === false).length)
+  },
+)
 </script>

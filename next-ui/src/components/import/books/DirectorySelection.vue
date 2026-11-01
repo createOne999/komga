@@ -54,7 +54,7 @@
 
 <script setup lang="ts">
 import { storeToRefs } from 'pinia'
-import { useDialogsStore } from '@/stores/dialogs'
+import { type DialogResult, useDialogsStore } from '@/stores/dialogs'
 import RemoteFileList from '@/components/RemoteFileList.vue'
 import { useDisplay } from 'vuetify'
 import { useAppStore } from '@/stores/app'
@@ -87,6 +87,11 @@ function browse() {
       id: '8Om/o/',
     }),
     maxWidth: 600,
+    okText: intl.formatMessage({
+      description: 'Import books: directory selection dialog confirmation button label',
+      defaultMessage: 'Ok',
+      id: 'tm9g8D',
+    }),
     closeOnSave: true,
     scrollable: true,
     fullscreen: display.xs.value,
@@ -96,7 +101,8 @@ function browse() {
     props: {},
   }
   dialogConfirmEdit.value.record = appStore.importBooksPath || '' // workaround for https://github.com/vuetifyjs/vuetify/issues/4144
-  dialogConfirmEdit.value.callback = () => {
+  dialogConfirmEdit.value.callback = (result: DialogResult) => {
+    if (result === 'cancel') return
     appStore.importBooksPath = dialogConfirmEdit.value.record as string
   }
 }
